@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Данные группы на графике</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #fafafa; color: #222; }
+  h1 { font-size: 20px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 12px 16px; flex: 1 1 140px; }
+  .card .num { font-size: 26px; font-weight: 700; }
+  .card .lbl { font-size: 13px; color: #666; }
+  .chart { background: #fff; border: 1px solid #ddd; border-radius: 10px; height: 320px; margin-bottom: 16px; }
+  footer { font-size: 12px; color: #777; margin-top: 8px; }
+  #err { color: #b00; }
+</style>
+</head>
+<body>
+<h1>Посещаемость группы</h1>
+<div id="err"></div>
+<div class="cards">
+  <div class="card"><div class="num" id="avg">—</div><div class="lbl">средняя посещаемость</div></div>
+  <div class="card"><div class="num" id="students">—</div><div class="lbl">студентов</div></div>
+  <div class="card"><div class="num" id="lessons">—</div><div class="lbl">занятий</div></div>
+</div>
+<div id="line" class="chart"></div>
+<div id="bar" class="chart"></div>
+<footer>Данные: attendance.csv из репозитория group-data. ФИО удалены, студенты закодированы (S01–S22), строки перемешаны. Данные обезличены.</footer>
+
+<script>
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i+1] === '"') { cell += '"'; i++; }
+      else if (c === '"') q = false;
+      else cell += c;
+    } else {
+      if (c === '"') q = true;
+      else if (c === ',' || c === ';') { row.push(cell); cell = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (cell !== '' || row.length) { row.push(cell); rows.push(row); row = []; cell = ''; }
+        if (c === '\r' && text[i+1] === '\n') i++;
+      } else cell += c;
+    }
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(x => x.trim() !== ''));
+}
+
+async function load() {
+  const tryUrl = async (u) => {
+    const r = await fetch(u);
+    const buf = await r.arrayBuffer();
+    let t = new TextDecoder('utf-8').decode(buf);
+    if (t.includes('\uFFFD')) t = new TextDecoder('windows-1251').decode(buf);
+    return t;
+  };
+  let text;
+  try { text = await tryUrl('attendance.csv'); }
+  catch (e) { document.getElementById('err').textContent = 'Не удалось загрузить attendance.csv. Откройте страницу после публикации на GitHub Pages.'; return; }
+  const rows = parseCSV(text);
+  if (!rows.length) { document.getElementById('err').textContent = 'Файл пуст.'; return; }
+  const header = rows[0].map(h => h.trim());
+  const dates = header.slice(1);
+  const students = rows.slice(1);
+  const nS = students.length, nL = dates.length;
+  const perLesson = dates.map((_, j) => {
+    let sum = 0, cnt = 0;
+    students.forEach(s => {
+      const v = (s[j+1] || '').trim();
+      if (v === '1' || v === '0') { sum += Number(v); cnt++; }
+    });
+    return cnt ? sum / cnt * 100 : 0;
+  });
+  const avg = perLesson.reduce((a,b)=>a+b,0) / (nL || 1);
+  document.getElementById('avg').textContent = avg.toFixed(1) + ' %';
+  document.getElementById('students').textContent = nS;
+  document.getElementById('lessons').textContent = nL;
+
+  const line = echarts.init(document.getElementById('line'));
+  line.setOption({
+    title: { text: 'Явка по занятиям, %', left: 'center', textStyle: { fontSize: 14 } },
+    tooltip: { trigger: 'axis' },
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: dates, axisLabel: { rotate: 30 } },
+    yAxis: { type: 'value', max: 100, name: '%' },
+    series: [
+      { name: 'Явка', type: 'line', data: perLesson.map(v => +v.toFixed(1)), symbolSize: 8 },
+      { name: 'Среднее', type: 'line', data: dates.map(() => +avg.toFixed(1)), lineStyle: { type: 'dashed' }, symbol: 'none' }
+    ]
+  });
+
+  const share = students.map(s => {
+    let c = 0, t = 0;
+    for (let j = 1; j <= nL; j++) { const v = (s[j]||'').trim(); if (v==='1'||v==='0'){ t++; c += Number(v); } }
+    return t ? c / t * 100 : 0;
+  });
+  const bins = [0,0,0,0];
+  share.forEach(p => { if (p < 25) bins[0]++; else if (p < 50) bins[1]++; else if (p < 75) bins[2]++; else bins[3]++; });
+  const bar = echarts.init(document.getElementById('bar'));
+  bar.setOption({
+    title: { text: 'Распределение студентов по доле посещений', left: 'center', textStyle: { fontSize: 14 } },
+    tooltip: {},
+    grid: { left: 40, right: 20, top: 50, bottom: 40 },
+    xAxis: { type: 'category', data: ['<25 %', '25–50 %', '50–75 %', '75 %+'] },
+    yAxis: { type: 'value', name: 'студентов' },
+    series: [{ type: 'bar', data: bins, itemStyle: { color: '#4a90d9' } }]
+  });
+
+  window.addEventListener('resize', () => { line.resize(); bar.resize(); });
+}
+load();
+</script>
+</body>
+</html>
